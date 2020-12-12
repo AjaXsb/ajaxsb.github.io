@@ -1,7 +1,36 @@
 <!DOCTYPE html>
-<html>
-<body>
-<h1>Hello World</h1>
-<p>I'm hosted with GitHub Pages.</p>
-</body>
+
+<html lang="en">
+    <head>
+        <link href="bootstrap.min.css" rel="stylesheet">
+        <link href="styles.css" rel="stylesheet">
+        <script src="homepage.js"></script>
+        <title>My Webpage</title>
+    </head>
+    <body onload="pageLoad()" >
+        <h1>Hello, World!</h1>
+
+        <!-- Dark Mode Switch -->
+        <div class="custom-control custom-switch">
+            <input type="checkbox" class="custom-control-input" id="customSwitches" onclick="darkmode()">
+            <label class="custom-control-label" for="customSwitches">Dark Mode</label>
+        </div>
+
+        <!-- Navigation bar -->
+        <div id="links">
+            <a href="#" class="badge">About</a>
+            <a href="portfolio.html" class="badge" onclick="redirectPage('portfolio.html'); return false;">Portfolio</a>
+            <a href="gallery.html" class="badge" onclick="redirectPage('gallery.html'); return false;">Gallery</a>
+            <a href="contact.html" class="badge" onclick="redirectPage('contact.html'); return false;">Contact</a>
+        </div>
+
+        <!-- Main para -->
+        <div id="para">
+            <p>My name is Shoan Bhatambare.</p>
+                <p>I am a Computer Science student and tell computer to do things.<br>
+                I like playing games and slaying monsters...in games.<br>
+                Contact me if you wanna go on an adventure later?
+            </p>
+        </div>
+    </body>
 </html>
