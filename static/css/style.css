@@ -312,30 +312,6 @@ input:focus, textarea:focus {
     color: #98c3d1;
 }
 
-.mfp-with-zoom.mfp-container, .mfp-with-zoom.mfp-bg {
-    opacity: 0;
-    -webkit-transition: all 300ms ease-out;
-            transition: all 300ms ease-out;
-    -webkit-backface-visibility: hidden;
-            backface-visibility: hidden;
-}
-
-.mfp-with-zoom.mfp-ready .mfp-container {
-    opacity: 1;
-}
-
-.mfp-with-zoom.mfp-ready.mfp-bg {
-    opacity: 0.8;
-}
-
-.mfp-with-zoom.mfp-removing .mfp-container {
-    opacity: 0;
-}
-
-.mfp-with-zoom.mfp-removing.mfp-bg {
-    opacity: 0;
-}
-
 .page-title h1 {
     margin: 0;
     line-height: 1;
