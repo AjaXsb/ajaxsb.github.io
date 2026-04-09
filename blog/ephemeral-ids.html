@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- <meta name="color-scheme" content="dark"> -->
+    <title>Deterministic Chaos: Discord-Style Tags for Ephemeral Users</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Lora:wght@400;700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        body { max-width: 680px; margin: 0 auto; padding: 2rem 1rem; font-family: 'Inter', -apple-system, Segoe UI, Helvetica, Arial, sans-serif; font-size: 20px; line-height: 1.58; letter-spacing: -0.003em; }
+        h1 { font-family: 'Lora', Georgia, Cambria, serif; font-size: 2.6rem; line-height: 1.25; margin-bottom: 0.4rem; letter-spacing: -0.02em; }
+        h2 { font-family: 'Lora', Georgia, Cambria, serif; font-size: 1.4rem; margin-top: 2.8rem; margin-bottom: 0.6rem; letter-spacing: -0.01em; }
+        p { margin-top: 0; margin-bottom: 2rem; }
+        a { text-decoration: underline; }
+        code { font-size: 0.85em; padding: 0.15rem 0.3rem; border-radius: 3px; }
+        pre { padding: 1rem; overflow-x: auto; line-height: 1.5; border-radius: 4px; }
+        pre code { padding: 0; }
+        blockquote { border-left: 3px solid; margin-left: 0; padding-left: 1.5rem; font-style: italic; }
+        .meta { font-size: 0.85rem; margin-bottom: 3rem; }
+        .signature { font-family: 'Lora', Georgia, Cambria, serif; font-size: 1.8rem; line-height: 1.25; letter-spacing: -0.02em; margin-bottom: 0.4rem; }
+        .signature + .meta { margin-bottom: 3rem; }
+        nav { margin-bottom: 2.5rem; }
+        .nav-bottom { margin-top: 2.5rem; margin-bottom: 0; text-align: right; }
+        sup a { text-decoration: none; font-weight: 600; }
+        .references { font-size: 0.9rem; margin-top: 3rem; border-top: 1px solid #ddd; padding-top: 1.5rem; }
+        .references h2 { font-size: 1.1rem; margin-top: 0; margin-bottom: 1rem; }
+        .references ol { padding-left: 1.5rem; line-height: 1.5; }
+        .references li { margin-bottom: 0.6rem; }
+    </style>
+</head>
+<body>
+    <nav><a href="../index.html">&larr; Back</a></nav>
+    <article>
+        <header>
+            <h1>Deterministic Chaos: Discord-Style Tags for Ephemeral Users</h1>
+            <p class="meta">Shoan Bhatambare &middot; 2 min read &middot; Handwritten</p>
+        </header>
+
+        <p><i>ephemeral</i> &middot; lasting or used for only a short period of time</p>
+
+        <p>Leaving behind a mark is the less focused part of being ephemeral, whether we talk about our mortality or the systems we create.</p>
+
+        <h2>How do we differentiate users if they can occupy the same names?</h2>
+        <p>Allowing reusable identities brings <i>unique</i> challenges. Which Albert was responsible for <code>e=mc²</code> and which was discussing politics with you on Conversatio? Wouldn't it be obvious if we could look at their faces, surnames, or something even simpler, their Tags.
+        </p> 
+
+        <h2>The #Tag Problem</h2>
+        <p>4 digits give you 10,000 different possibilities for each unique username, which is a perfectly fine design choice for initial launch. Hell, it was good enough for discord's discriminator system till 2023<sup><a href="#ref-1">[1]</a></sup>. And to go from #0000 to #9999 linearly, in technical implementation, is as easy as eating an apple.</p>
+        <p><i>But when you remove the forbiddenness of the fruit<sup><a href="#ref-2">[2]</a></sup>, there's added room for creativity.</i></p>
+    
+        <p>While linear incrementation follows natural rule, it falls short in aesthetics. Sequenced tags would have given away the number of signups while also being boring.</p>
+
+        <p>So if linearity is a no go, the next obvious choice would be to go random. Roll a dice and check if the number is already used or not, sounds simple enough but the compounding nature of database lookups and increasing storage space for used tags quickly thwarts this approach as well. We had to make the numbers <i>seem</i> random.</p>
+        
+        <h2>True Random or Just Math?</h2>
+        <p>Imagine a clock with ten thousand ticks. You could jump 3 ticks and generate unique tags which only repeat after exhausting all ticks on the clock. But 0000, 0003, 0006, 0009... is not an exciting sequence. The reason why jumping 3 instead of 2 or 4 ticks works is because 3 is co prime<sup><a href="#ref-3">[3]</a></sup> to 10000, meaning they share no common factors other than 1. Even though it's simple, lets write down this algorithm<sup><a href="#ref-4">[4]</a></sup> to make it easier to tweak:</p>
+        <p><code>tag = (counter * x) % 10000;</code> where x is the co prime.</p>
+        <p>The <code>% 10000 </code> operation covers cases where the result of the previous multiplication goes over 10000.</p>
+        
+        <h2>Algoesthetics</h2>
+        <p>So now its just a matter of choosing the x. Each co prime builds its own pattern around the clock; 9999 would count backwards while 5001 would alternate between two halves of the space. We wanted a stride which would <i>feel</i> random, with no obvious pattern to the human eye.</p>
+        <p>Behold, 7723. It takes the crown when it comes to being messy with the distribution. The numbers it generated looked beautifully unpredictable. The math feels like magic, a quiet sleight of hand against our ability for pattern recognition.</p>
+        <code>0000, 7723, 5446, 3169, 0892...</code>        
+
+        <h2>Technical Analysis</h2>
+        <p>The equation is essentially a minimal perfect hash function<sup><a href="#ref-5">[5]</a></sup>. All we need to store in memory is a counter for each name, bumping it up after each use basically taking O(1) in space complexity. The math guarantees no collisions and zero retries making every case a best case scenario.</p>
+        <p>It's a perfect system operating on an understood limit of 10,000 signups for a particular name. Even the very nature of ephemerality, the fact that something which is gone still might have an effect on what might come, should drive innovation in whatever path we take.</p>
+        <p><i>"Own Your Tag."</i></p>
+        
+        <p class="meta">Reach out: <a href="mailto:shoanb2@gmail.com">shoanb2@gmail.com</a> &middot; <a href="https://github.com/AjaXsb">GitHub</a> &middot; <a href="https://linkedin.com/in/shoan-bhatambare">LinkedIn</a></p>
+
+        <section class="references">
+            <h2>References</h2>
+            <ol>
+                <li id="ref-1"><a href="https://discord.com/blog/usernames">Discord — "Discord is changing: New usernames &amp; display names"</a> (2023)</li>
+                <li id="ref-2"><a href="https://en.wikipedia.org/wiki/Forbidden_fruit">Forbidden fruit</a> — Wikipedia</li>
+                <li id="ref-3"><a href="https://en.wikipedia.org/wiki/Coprime_integers">Coprime integers</a> — Wikipedia</li>
+                <li id="ref-4"><a href="https://en.wikipedia.org/wiki/Linear_congruential_generator">Linear congruential generator</a> — Wikipedia</li>
+                <li id="ref-5"><a href="https://en.wikipedia.org/wiki/Perfect_hash_function">Perfect hash function</a> — Wikipedia</li>
+            </ol>
+        </section>
+    </article>
+    <nav class="nav-bottom"><a href="../index.html">&larr; Back</a></nav>
+</body>
+</html>
