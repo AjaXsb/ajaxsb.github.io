@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>No Database, No Problem: A Chat Platform on Pure Redis</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Lora:wght@400;700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        body { max-width: 680px; margin: 0 auto; padding: 2rem 1rem; font-family: 'Inter', -apple-system, Segoe UI, Helvetica, Arial, sans-serif; font-size: 20px; line-height: 1.58; letter-spacing: -0.003em; }
+        h1 { font-family: 'Lora', Georgia, Cambria, serif; font-size: 2.6rem; line-height: 1.25; margin-bottom: 0.4rem; letter-spacing: -0.02em; }
+        h2 { font-family: 'Lora', Georgia, Cambria, serif; font-size: 1.4rem; margin-top: 2.8rem; margin-bottom: 0.6rem; letter-spacing: -0.01em; }
+        p { margin-top: 0; margin-bottom: 2rem; }
+        a { text-decoration: underline; }
+        code { font-size: 0.85em; padding: 0.15rem 0.3rem; border-radius: 3px; }
+        pre { padding: 1rem; overflow-x: auto; line-height: 1.5; border-radius: 4px; }
+        pre code { padding: 0; }
+        blockquote { border-left: 3px solid; margin-left: 0; padding-left: 1.5rem; font-style: italic; }
+        .meta { font-size: 0.85rem; margin-bottom: 3rem; }
+        .signature { font-family: 'Lora', Georgia, Cambria, serif; font-size: 1.8rem; line-height: 1.25; letter-spacing: -0.02em; margin-bottom: 0.4rem; }
+        .signature + .meta { margin-bottom: 3rem; }
+        nav { margin-bottom: 2.5rem; }
+        .nav-bottom { margin-top: 2.5rem; margin-bottom: 0; text-align: right; }
+        sup a { text-decoration: none; font-weight: 600; }
+        .references { font-size: 0.9rem; margin-top: 3rem; border-top: 1px solid #ddd; padding-top: 1.5rem; }
+        .references h2 { font-size: 1.1rem; margin-top: 0; margin-bottom: 1rem; }
+        .references ol { padding-left: 1.5rem; line-height: 1.5; }
+        .references li { margin-bottom: 0.6rem; }
+        .figure { margin: 2rem 0; padding: 1rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem; text-align: center; }
+        .figure a { font-weight: 600; }
+    </style>
+</head>
+<body>
+    <nav><a href="../index.html">&larr; Back</a></nav>
+    <article>
+        <header>
+            <h1>No Database, No Problem: A Chat Platform on Pure Redis</h1>
+            <p class="meta">Shoan Bhatambare &middot; 4 min read &middot; Handwritten</p>
+        </header>
+
+        <p>Every app needs a database. SQL, NoSQL, pick your poison.
+<i>Conversatio<sup><a href="#ref-1">[1]</a></sup> uses none.</i> The users are ephemeral, the conversations are ephemeral,
+so <i>naturally</i> the database is ephemeral too. Redis holds everything, and it forgets just as quickly.
+
+This went against everything I was taught. Which made it worth trying.
+</p>
+
+        <h2>Why no database?</h2>
+        <p>On Conversatio, ephemerality is a feature and not a workaround. Sessions live as long as their user does. DMs auto-expire in an hour.
+Match rooms come live with the kickoff and die with the final whistle.
+There is no archive to query, no profile to retrieve.
+The product is the present moment. Persistence would be a bug.
+</p>
+        <p><i>In comes Redis, a speed demon cache which doubles as a database.</i></p>
+        
+        <h2>Two Alberts walk into a lobby</h2>
+        <p>Ephemerality works for DMs and events. Public rooms break it by keeping past conversations for future ones.
+While the rooms persist, the people in them don't. So names recycle.
+Which Albert wrote <code>e=mc²</code>? Which one called you a moron?
+A #Tag, covered <a href="ephemeral-ids.html">in the last post,</a> fixes
+the human side. The race condition fixes the machine side.</p>
+
+        <p>Two clients log in as "Albert" the same millisecond. Without a transaction,
+both win. <code>HSETNX usernames {name} {sessionId}</code>. Set if not exists.
+One round-trip, atomic, no lock. The first write claims the name; the second
+gets back zero and tries again with an alternative name.</p>
+
+        <h2>Sessions are just TTLs</h2>
+        <p><i>Stop typing → you disappear.</i> Every session is a Redis hash
+<code>session:{sessionId}</code> with a 15-minute Time-To-Live.
+The deadline is cast but not in iron. Every message resets the clock.
+Lurk past 14 minutes, you turn to ash. Send a "Hey", you live another 15.</p>
+        <p><i>"By nature, I keep moving, man. My theory is, be the shark. You've just got to keep moving. You can't stop."</i> - Brad Pitt</p>
+        
+        
+        <h2>So you sent that 'Hey'. What now?</h2>
+        <p>Once you manage to get through the door, the gatekeeper at Conversatio's office has some questions for you. He hopes you brought your <i>ID</i> to make sure you belong in the first place. Confirming that your ID is legit and your <i>right to speech</i> still holds, he starts checking the message. He has to be thorough so he quickly makes sure it follows <i>company policy</i> along with any other special <i>ink</i> requirements. The message then enters the <i>data room</i> and while our <i>AI hoover</i> makes its way to do a check, it is copied over to the <i>recipients</i> as well. </p>
+        <p>Decoded: gatekeeper is the rate limiter, the ID check is
+<code>fetchSessionAndBumpTTL</code>, the policy is layer-1 regex,
+the ink is link classification, the data room is a Redis sorted set,
+the hoover is async OpenAI moderation<sup><a href="#ref-3">[3]</a></sup>, the recipients are the
+Socket.IO<sup><a href="#ref-4">[4]</a></sup> <code>room:message</code> broadcast.</p>
+
+        <h2>Sleight of hand</h2>
+        <p>Remember "every message resets the TTL"? Pair that with Redis pipelines
+and we've got ourselves a neat little two-handed trick: session
+revalidation + TTL bump in one round-trip.
+</p>
+        <pre><code>// Pseudo: HGETALL + EXPIRE pipelined
+const [session] = await redis.pipeline()
+  .hGetAll(`session:${sessionId}`)
+  .expire(`session:${sessionId}`, 900)
+  .exec();</code></pre>
+
+        <p>Conversatio's UI feels instant because of optimistic rendering with
+<code>tempId</code> reconciliation. Client renders the message right away;
+server acks with a permanent <code>seq</code>.</p>
+        <p>While this is going on, our AI hoover is hoovering away in the server room.</p>
+        
+        <h2>WOOP WOOP! THAT'S THE SOUND OF THE POLICE</h2>
+        <p>Overseeing messages and maintaining the <i>vibe</i> of rooms is paramount.
+ConversatioPD runs two units. The bouncer at the door: a regex frisk, sub-millisecond, blocks the obvious before anyone gets in. The plainclothes detective: slower, smarter, expensive AI review that walks the room after the fact and taps shoulders when something off slipped past.
+
+The bouncer runs in real-time. The detective catches up later.
+</p>
+        <p>The bouncer (layer 1): <i>synchronous</i> regex, sub-millisecond, runs before
+storage. Catches the obvious. <i>10 rejects in 60 seconds → escalating mute.</i>
+</p>
+        <p>
+The detective (layer 2): OpenAI moderation, <i>fire-and-forget</i> after broadcast.
+Verdict cached in Redis by text hash to never review the same message twice.
+Flag → server retracts the message from every connected client via
+<code>mod:layer2:retract</code>.</p>
+        <p><i>Disclaimer: Conversatio has a fail-open policy. Moderation outages cannot take the chat down.</i></p>
+
+        <h2>Sacrifices on the old town road</h2>
+        <p>This design produces a present but fragile system. It gives up reliability and peaceful sleep for simplicity and tightness. We don't anticipate serving a million users any time soon, so we sized the ceiling for the load we'd actually see, not the load we'd brag about.</p>
+        <p>In a single Redis node, the biggest constraint is memory. We knew this, and even so, Conversatio is sized for thousands of users.</p>
+        <p>Some other tradeoffs included keyspace notifications<sup><a href="#ref-2">[2]</a></sup> not being portable. Render Key Value and Upstash mute the events the expiry listener depends on. The fix is a fallback sweeper polling loop. Whichever fires first wins.</p>
+        <p>If it's working, it's working. No analytics, no audit log, no "what did we ship last quarter." Ephemeral by design means ephemeral for the operator too.</p>
+
+        <h2>The full schematic</h2>
+        <div class="figure">
+            <p><a href="Conversatio%20Architecture%20_Standalone_.html" target="_blank" rel="noopener noreferrer">Open the architecture doc &rarr;</a></p>
+            <p style="margin-bottom:0;font-size:0.85em;">Components, Redis data model, socket events, message pipeline, room types.</p>
+        </div>
+
+        <h2>Designed to forget</h2>
+        <p>Walk into Conversatio tomorrow and the conversation you had today is gone. The username you picked is up for grabs. The match room you cheered in has long since closed. None of this is a bug; all of it is the feature.</p>
+
+        <p>Ephemeral by design means the system has to earn each second it stays alive. Every message is a small bet that something matters enough to keep around for fifteen more minutes. Most bets lose. That's the point.</p>
+
+        <p>Most production systems hoard. They keep everything because deletion is scary and storage is cheap. Conversatio forgets on purpose, and the forgetting is what makes it work. The constraint became the design. Every piece of state had to justify itself, every subsystem had to fit in fifteen minutes, and the system fits in your head because it has to.</p>
+
+        <p><i>Here for a good time, not a long time</i></p>
+
+        <p class="meta">Reach out: <a href="mailto:shoanb2@gmail.com">shoanb2@gmail.com</a> &middot; <a href="https://github.com/AjaXsb">GitHub</a> &middot; <a href="https://linkedin.com/in/shoan-bhatambare">LinkedIn</a></p>
+
+        <section class="references">
+            <h2>References</h2>
+            <ol>
+                <li id="ref-1"><a href="https://conversatio-frontend.vercel.app/">Conversatio</a>, the live site.</li>
+                <li id="ref-2"><a href="https://redis.io/docs/latest/develop/use/keyspace-notifications/">Redis Keyspace Notifications</a></li>
+                <li id="ref-3"><a href="https://platform.openai.com/docs/guides/moderation">OpenAI Moderation API</a></li>
+                <li id="ref-4"><a href="https://socket.io/docs/v4/">Socket.IO v4 docs</a></li>
+                <li id="ref-5"><a href="ephemeral-ids.html">Deterministic Chaos: Discord-Style Tags for Ephemeral Users</a>, companion post on the tag system.</li>
+            </ol>
+        </section>
+
+        <p class="nav-bottom"><a href="../index.html">&larr; Back</a></p>
+    </article>
+</body>
+</html>
