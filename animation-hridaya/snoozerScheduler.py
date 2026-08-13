@@ -1,0 +1,354 @@
+"""
+Live Data Scheduler - Urgency-based scheduling for real-time market data.
+
+This scheduler manages priceoverview, itemordershistogram, and itemordersactivity
+endpoints based on their latency requirements using an urgency scoring system.
+"""
+
+import asyncio
+from datetime import datetime, timedelta
+import aiohttp
+from typing import List, Optional
+from src.steamAPIclient import SteamAPIClient
+from src.RateLimiter import RateLimiter
+from utility.loadConfig_utility import load_config_from_yaml
+from src.SQLinserts import SQLinserts
+
+
+# ISO currency code -> (Steam currency id, default country) used to re-align
+# ingest request defaults when the wallet returns a currency we didn't request.
+# Steam currency ids: USD=1, GBP=2, EUR=3, INR=24.
+ISO_CURRENCY_DEFAULTS = {
+    'USD': (1, 'US'),
+    'GBP': (2, 'GB'),
+    'EUR': (3, 'DE'),
+    'INR': (24, 'IN'),
+}
+
+
+class snoozerScheduler:
+    """
+    Schedules live API calls based on urgency (how overdue each item is).
+
+    Items with urgency >= 1.0 are overdue and need immediate execution.
+    The item with highest urgency is always executed first.
+    """
+
+    def __init__(
+        self,
+        live_items: Optional[List[dict]] = None,
+        rate_limiter: Optional[RateLimiter] = None,
+        config_path: str = "config.yaml",
+        timescale_dsn: Optional[str] = None
+    ):
+        """
+        Initialize the live scheduler.
+
+        Args:
+            live_items: Optional list of items to track. If None, loads from config.
+            rate_limiter: Optional shared RateLimiter instance. If None, client creates its own.
+            config_path: Path to the YAML configuration file (used if live_items is None)
+            timescale_dsn: Optional Postgres/Timescale DSN. When set, SQLinserts
+                writes to Postgres; when None it falls back to SQLite.
+        """
+        self.rate_limiter = rate_limiter
+        self.timescale_dsn = timescale_dsn
+
+        if live_items is not None:
+            self.live_items = live_items
+            # Initialize tracking fields for each item
+            for item in self.live_items:
+                item['last_update'] = None
+        else:
+            self.config = load_config_from_yaml(config_path)
+            self.live_items = self.load_live_items()
+
+        self.steam_client: Optional[SteamAPIClient] = None  # Will be initialized in run()
+        self.data_wizard: Optional[SQLinserts] = None  # Will be initialized in run()
+
+    def load_live_items(self) -> List[dict]:
+        """
+        Load all items from config that are NOT pricehistory.
+
+        Returns:
+            List of live item configurations (priceoverview, histogram, activity)
+        """
+        live_items = []
+        for item in self.config['TRACKING_ITEMS']:
+            if item['api_id'] != 'pricehistory':
+                # Initialize tracking fields
+                item['last_update'] = None
+                live_items.append(item)
+
+        return live_items
+
+    def reconcile_live_set(self, new_items: List[dict]) -> dict:
+        """Swap the live poller set to a new desired set, live, no restart.
+
+        This scheduler is a SINGLE loop over self.live_items (not one task per
+        item), so reconciling means rebuilding that list — not creating/cancelling
+        tasks. The run loop holds a reference to the old list for the iteration
+        it's in and picks up the rebound list on its next pass, so an atomic
+        rebind here is safe against the loop.
+
+        Surviving items keep their runtime state (last_update, skip_until,
+        consecutive_backoffs) keyed by (market_hash_name, api_id) — UNIQUE in the
+        table, so the key is stable. New items get last_update=None so they fire
+        immediately (urgency == inf). Removed items simply drop out of the list.
+
+        The shared global RateLimiter caps every call at the budget regardless of
+        how many pollers exist, so adding items can't transiently exceed the
+        limit — the feasibility gate (in the caller) guards sustained demand,
+        the limiter guards the instant.
+
+        Returns a small diff summary for logging.
+        """
+        prev = {(i['market_hash_name'], i['api_id']): i for i in self.live_items}
+        new_keys = {(i['market_hash_name'], i['api_id']) for i in new_items}
+
+        rebuilt = []
+        for item in new_items:
+            key = (item['market_hash_name'], item['api_id'])
+            old = prev.get(key)
+            if old is not None:
+                # Carry runtime state; new config fields (interval/currency) win.
+                item['last_update'] = old.get('last_update')
+                item['skip_until'] = old.get('skip_until')
+                item['consecutive_backoffs'] = old.get('consecutive_backoffs', 0)
+            else:
+                item['last_update'] = None  # brand new -> poll asap
+            rebuilt.append(item)
+
+        added = sorted(new_keys - prev.keys())
+        removed = sorted(prev.keys() - new_keys)
+
+        # Atomic rebind — the running loop sees the new list next pass.
+        self.live_items = rebuilt
+        return {"added": added, "removed": removed, "total": len(rebuilt)}
+
+    def calculate_urgency(self, item: dict) -> float:
+        """
+        Calculate urgency score for an item.
+
+        Urgency = (time since last update) / (target polling rate)
+        
+        Returns 0.0 if item is in cooldown.
+
+        Args:
+            item: Item configuration with last_update and polling-interval-in-seconds
+
+        Returns:
+            Urgency score (>= 1.0 means overdue, < 1.0 means not yet, 0.0 if cooling down)
+        """
+        # If in backoff cooldown, urgency is 0 (never urgent)
+        if item.get('skip_until') and datetime.now() < item['skip_until']:
+            return 0.0
+        
+        if item['last_update'] is None:
+            return float('inf')
+
+        delta = datetime.now() - item['last_update']
+        
+        urgency = delta.total_seconds() / item['polling-interval-in-seconds']
+        return urgency
+
+    def calculate_min_sleep_duration(self) -> float:
+        """
+        Calculate MINIMUM sleep time until ANY item becomes actionable.
+
+        Checks all items and returns the shortest time until any item:
+        - Reaches urgency 1.0 (overdue), OR
+        - Exits 429 cooldown (skip_until reached)
+        
+        This ensures we wake up for the SOONEST item, not just the most urgent one.
+
+        Returns:
+            Sleep duration in seconds
+        """
+        min_sleep = float('inf')
+
+        for item in self.live_items:
+            # Check if item is in 429 cooldown
+            if item.get('skip_until') and datetime.now() < item['skip_until']:
+                # Time until cooldown ends
+                time_until_cooldown_ends = (item['skip_until'] - datetime.now()).total_seconds()
+                min_sleep = min(min_sleep, time_until_cooldown_ends)
+
+            else:
+                # Normal urgency calculation
+                urgency = self.calculate_urgency(item)
+                if urgency < 1.0:  # Only consider items that aren't already overdue
+                    # Time until this item becomes urgent (urgency = 1.0)
+                    time_until_urgent = (1.0 - urgency) * item['polling-interval-in-seconds']
+                    min_sleep = min(min_sleep, time_until_urgent)
+
+        # min_sleep stays inf only when there are no schedulable items (empty
+        # live set, e.g. boot with an empty table). Idle-poll briefly instead of
+        # busy-spinning on sleep(0) so a runtime-added item (via reconcile) is
+        # picked up within a couple seconds without a restart. When items exist
+        # but none are overdue, min_sleep is finite (time-until-urgent).
+        return min_sleep if min_sleep != float('inf') else 2.0
+
+    def apply_exponential_backoff(self, item: dict, error_code: int) -> None:
+        """
+        Apply exponential backoff for rate limit (429), server (5xx), or network errors.
+        
+        Backoff strategy:
+        - 1st error: skip 1 polling interval
+        - 2nd consecutive: skip 2 intervals
+        - 3rd consecutive: skip 4 intervals
+        - Capped at 8x the polling interval
+        
+        Args:
+            item: Item configuration that received the error
+            error_code: HTTP status code (429, 5xx) or 0 for network errors
+        """
+        item['consecutive_backoffs'] = item.get('consecutive_backoffs', 0) + 1
+        
+        # Skip N polling intervals, where N = 2^(consecutive - 1), capped at 8
+        skip_multiplier = min(2 ** (item['consecutive_backoffs'] - 1), 8)
+        skip_seconds = item['polling-interval-in-seconds'] * skip_multiplier
+        
+        item['skip_until'] = datetime.now() + timedelta(seconds=skip_seconds)
+        
+        if error_code == 429:
+            error_type = "rate limited"
+        elif error_code == 0:
+            error_type = "network error"
+        else:
+            error_type = f"server error {error_code}"
+        
+        print(f"  ⏸ {error_type} on {item['market_hash_name']}:{item['api_id']} - "
+              f"cooling down {skip_seconds:.0f}s (attempt #{item['consecutive_backoffs']})")
+
+    async def execute_item(self, item: dict) -> None:
+        """
+        Execute the API call for a specific item.
+
+        Args:
+            item: Item configuration to execute
+        """
+        # Check if item is in cooldown from previous backoff
+        if item.get('skip_until') and datetime.now() < item['skip_until']:
+            return  # Silently skip, still cooling down
+        
+        try:
+            # match case for MAXIMUM EFFICIENCY
+            match item['api_id']:
+                
+                case 'priceoverview':
+                    result = await self.steam_client.fetch_price_overview(
+                        appid=item['appid'],
+                        market_hash_name=item['market_hash_name'],  # REQUIRED
+                        currency=item.get('currency', 1),  # Default to USD
+                        country=item.get('country', 'US'),  # Default to US
+                        language=item.get('language', 'english')  # Default to english
+                    )
+                case 'itemordershistogram':
+                    result = await self.steam_client.fetch_orders_histogram(
+                        appid=item['appid'],
+                        item_nameid=item['item_nameid'],  # REQUIRED
+                        currency=item.get('currency', 1),  # Default to USD
+                        country=item.get('country', 'US'),  # Default to US
+                        language=item.get('language', 'english')  # Default to english
+                    )
+                case 'itemordersactivity':
+                    result = await self.steam_client.fetch_orders_activity(
+                        item_nameid=item['item_nameid'],  # REQUIRED
+                        country=item.get('country', 'US'),  # Default to US
+                        language=item.get('language', 'english'),  # Default to english
+                        currency=item.get('currency', 1),  # Default to USD
+                        two_factor=0
+                    )
+                    # Activity HTML is already parsed by the client
+                    # Success message will be printed after DB storage
+                case _:
+                    raise ValueError(f"Unknown API endpoint: {item['api_id']}")
+
+            # Store result to database. The returned ISO currency is what Steam
+            # actually tagged the row with (derived from the response symbol).
+            stored_currency = await self.data_wizard.store_data(result, item)
+
+            # Currency-flip: the wallet decides the returned currency regardless of
+            # what we requested. If it differs from this item's request default,
+            # re-align the default so subsequent calls ask for the wallet currency.
+            # Row tagging is already correct via store_data; this only fixes requests.
+            if stored_currency in ISO_CURRENCY_DEFAULTS:
+                steam_code, country = ISO_CURRENCY_DEFAULTS[stored_currency]
+                if item.get('currency') != steam_code:
+                    print(f"  ⟳ {item['market_hash_name']}: wallet currency is "
+                          f"{stored_currency} — flipping ingest default "
+                          f"{item.get('currency')}→{steam_code} ({country})")
+                    item['currency'] = steam_code
+                    item['country'] = country
+
+            # SUCCESS: Reset backoff tracking
+            item['consecutive_backoffs'] = 0
+            item['skip_until'] = None
+            
+            # Update last_update timestamp
+            item['last_update'] = datetime.now()
+
+            # Print success message with most relevant data point
+            match item['api_id']:
+                case 'priceoverview':
+                    print(f"  ✓ {item['market_hash_name']}: {result.lowest_price or 'N/A'}")
+                case 'itemordershistogram':
+                    print(f"  ✓ {item['market_hash_name']}: {result.buy_order_count or 0} orders")
+                case 'itemordersactivity':
+                    activity_count = len(result.parsed_activities) if result.parsed_activities else 0
+                    print(f"  ✓ {item['market_hash_name']}: {activity_count} activities")
+
+        except aiohttp.ClientResponseError as e:
+            if e.status == 429 or e.status >= 500:
+                # Rate limited or server error - exponential backoff
+                self.apply_exponential_backoff(item, e.status)
+            elif e.status in (401, 403):
+                # Authentication error - likely cookie issue
+                print(f"  ✗ HTTP {e.status}: {e.message} - check Steam cookies in .env")
+            else:
+                # Client error (4xx) - just log, config validated at load time
+                print(f"  ✗ HTTP {e.status}: {e.message}")
+
+        except aiohttp.ClientError as e:
+            # Network error (timeout, DNS, connection refused) - treat as transient
+            print(f"  ⚠ Network error on {item['market_hash_name']}:{item['api_id']} - {e}")
+            self.apply_exponential_backoff(item, 0)
+            
+        except Exception as e:
+            # Parse errors, etc. - just log, will retry on next normal cycle
+            print(f"  ✗ Error: {e}")
+
+    async def run(self) -> None:
+        """
+        Main scheduler loop using urgency-based algorithm.
+
+        Algorithm:
+        1. Calculate urgency for all items
+        2. If max_urgency >= 1.0, execute that item and loop
+        3. If max_urgency < 1.0, sleep until next item is overdue
+        4. Repeat forever
+        """
+        async with SteamAPIClient(rate_limiter=self.rate_limiter) as client, SQLinserts(timescale_dsn=self.timescale_dsn) as wizard:
+            self.steam_client = client
+            self.data_wizard = wizard
+
+            while True:
+                # Execute ALL items that are overdue (urgency >= 1.0)
+                executed_any = False
+                for item in self.live_items:
+                    urgency = self.calculate_urgency(item)
+                    if urgency >= 1.0:
+                        await self.execute_item(item)
+                        executed_any = True
+
+                # If nothing was urgent, sleep until the next item becomes urgent
+                if not executed_any:
+                    sleep_duration = self.calculate_min_sleep_duration()
+                    await asyncio.sleep(sleep_duration)
+
+
+# Entry point for testing
+if __name__ == "__main__":
+    scheduler = snoozerScheduler()
+    asyncio.run(scheduler.run())

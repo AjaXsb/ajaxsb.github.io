@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hridaya</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="tooltip" class="tooltip hidden"></div>
+  <button id="infoBtn" class="info-btn" aria-label="About this piece">i</button>
+  <div id="infoPanel" class="info-panel hidden">
+    <button id="closeInfoBtn" class="close-btn" aria-label="Close">&times;</button>
+    <h2>Legend</h2>
+    <p class="disclaimer">Timings are stylized for visual effect, not accurate to the real system's actual cadence.</p>
+    <div id="infoPanelContent"></div>
+  </div>
+  <script src="codeSources.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- <meta name="color-scheme" content="dark"> -->
+    <title>A Game of Trades: Reading the Steam Market with Hridaya</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Lora:wght@400;700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        body { max-width: 680px; margin: 0 auto; padding: 2rem 1rem; font-family: 'Inter', -apple-system, Segoe UI, Helvetica, Arial, sans-serif; font-size: 20px; line-height: 1.58; letter-spacing: -0.003em; }
+        h1 { font-family: 'Lora', Georgia, Cambria, serif; font-size: 2.6rem; line-height: 1.25; margin-bottom: 0.4rem; letter-spacing: -0.02em; }
+        h2 { font-family: 'Lora', Georgia, Cambria, serif; font-size: 1.4rem; margin-top: 2.8rem; margin-bottom: 0.6rem; letter-spacing: -0.01em; }
+        p { margin-top: 0; margin-bottom: 2rem; }
+        a { text-decoration: underline; }
+        code { font-size: 0.85em; padding: 0.15rem 0.3rem; border-radius: 3px; }
+        pre { padding: 1rem; overflow-x: auto; line-height: 1.5; border-radius: 4px; }
+        pre code { padding: 0; }
+        blockquote { border-left: 3px solid; margin-left: 0; padding-left: 1.5rem; font-style: italic; }
+        .meta { font-size: 0.85rem; margin-bottom: 3rem; }
+        .signature { font-family: 'Lora', Georgia, Cambria, serif; font-size: 1.8rem; line-height: 1.25; letter-spacing: -0.02em; margin-bottom: 0.4rem; }
+        .signature + .meta { margin-bottom: 3rem; }
+        nav { margin-bottom: 2.5rem; }
+        .nav-bottom { margin-top: 2.5rem; margin-bottom: 0; text-align: right; }
+        sup a { text-decoration: none; font-weight: 600; }
+        .references { font-size: 0.9rem; margin-top: 3rem; border-top: 1px solid #ddd; padding-top: 1.5rem; }
+        .references h2 { font-size: 1.1rem; margin-top: 0; margin-bottom: 1rem; }
+        .references ol { padding-left: 1.5rem; line-height: 1.5; }
+        .references li { margin-bottom: 0.6rem; }
+        .figure { margin: 2rem 0; padding: 1rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem; text-align: center; }
+        .figure a { font-weight: 600; }
+        figure { margin: 2rem 0; }
+        figure img { max-width: 100%; display: block; border-radius: 4px; }
+        figcaption { font-size: 0.85rem; font-style: italic; text-align: center; margin-top: 0.6rem; }
+    </style>
+</head>
+<body>
+    <nav><a href="../index.html">&larr; Back</a></nav>
+    <article>
+        <header>
+            <h1>A Game of Trades: Reading the Steam Market with Hridaya</h1>
+            <p class="meta">Shoan Bhatambare &middot; 3 min read &middot; Handwritten</p>
+        </header>
+
+        <p>Math sits at the edge of the observable universe and at the heart of modern marketplaces we developed which are still rooted in the barter system of the past. "Give me this, I'll give you that" has evolved into a game on par with the one god plays. Imagine you're at his card table. Do you wonder if he's using math to make you lose?
+        </p>
+
+        <figure>
+            <img src="https://static0.srcdn.com/wordpress/wp-content/uploads/2024/12/tiangong-and-yi-xing-in-secret-level-episode-14-honor-of-kings.jpg?q=49&fit=crop&w=825&dpr=2" alt="An orphaned prodigy challenges the all-knowing artificial intelligence that rules his city.">
+            <figcaption>
+Secret Level: Episode 14: AI vs Man <sup><a href="#ref-2">[2]</a></sup></figcaption>
+        </figure>
+
+        <h2>Moving markets</h2>
+        <p>The <a href="https://steamcommunity.com/market/" target="_blank" rel="noopener noreferrer">Steam Community market</a><sup><a href="#ref-1">[1]</a></sup> is a complex system with millions of moving parts. Even if you would think god moves markets or the moon has an effect on the charts, there's information hidden in them up for grabs still.
+            Hridaya has made it possible to probe into this information with sub second granularity and long term tracking support on the markets movements. The user has been handed the power to observe any item at any time interval.
+
+        </p>
+
+        <p>Hence, not every item needs polling at the same rate. Urgency scores each item by how overdue it is relative to its own interval:</p>
+        <pre><code>delta = datetime.now() - item['last_update']
+urgency = delta.total_seconds() / item['polling-interval-in-seconds']</code></pre>
+        <p>A ratio above 1 means the item is past due. Sorting by this score lets the poller always chase the most stale item first, instead of cycling through everything on a fixed schedule.</p>
+
+        <p>On the other end, requests going out are capped by a sliding window rate limiter<sup><a href="#ref-3">[3]</a></sup>:</p>
+        <pre><code>current_time = time.time()
+cutoff_time = current_time - self._window_seconds
+self._timestamps = [ts for ts in self._timestamps if ts > cutoff_time]
+
+# Check if we've hit the rate limit
+if len(self._timestamps) >= self._max_requests:
+    # Calculate exact wait time until oldest timestamp exits the window
+    oldest_timestamp = self._timestamps[0]
+    wait_time = self._window_seconds - (current_time - oldest_timestamp)
+else:
+    # We have capacity - grant the token
+    self._timestamps.append(time.time())
+    return</code></pre>
+        <p>Timestamps outside the window get dropped first, so the count always reflects requests made in the last <code>window_seconds</code>. If capacity remains, the token is granted immediately; otherwise the wait time is computed exactly from the oldest timestamp still in the window, no polling or guesswork needed.</p>
+
+        <div class="figure">
+            <p><a href="../animation-hridaya/index.html" target="_blank" rel="noopener noreferrer">Watch Hridaya beat live &rarr;</a></p>
+            <p style="margin-bottom:0;font-size:0.85em;">A generative animation of the whole system running together, rendered straight from the source code.</p>
+        </div>
+
+        <h2>Reading god's hand</h2>
+        <p>None of this matters without the numbers to point it at. Every scheduled tick writes another row: price, volume, order book depth, timestamped down to the second. One snapshot tells you nothing, a card face down. Months of them, stacked, start to look like a hand being played out in the open. Spikes that repeat on the same weekday. Sell walls that appear right before a price correction. Volume that dries up before it doesn't. If god is running the deck, the tell isn't in any single trade, it's in the pattern across thousands of them, and Hridaya is what's left holding the receipts.</p>
+
+        <p class="meta">Reach out: <a href="mailto:shoanb2@gmail.com">shoanb2@gmail.com</a> &middot; <a href="https://github.com/AjaXsb">GitHub</a> &middot; <a href="https://linkedin.com/in/shoan-bhatambare">LinkedIn</a></p>
+
+        <section class="references">
+            <h2>References</h2>
+            <ol>
+                <li id="ref-1"><a href="https://steamcommunity.com/market/" target="_blank" rel="noopener noreferrer">Steam Community Market</a></li>
+                <li id="ref-2"><a href="https://www.imdb.com/title/tt33208159/?ref_=ttep_ep14" target="_blank" rel="noopener noreferrer">Secret Level</a> &mdash; "Tiangong and Yi Xing" (Honor of Kings), Episode 14 (2024)</li>
+                <li id="ref-3"><a href="https://github.com/donnemartin/system-design-primer#rate-limiter" target="_blank" rel="noopener noreferrer">System Design Primer &mdash; Rate Limiter (sliding window log)</a></li>
+            </ol>
+        </section>
+    </article>
+    <nav class="nav-bottom"><a href="../index.html">&larr; Back</a></nav>
+</body>
+</html>
